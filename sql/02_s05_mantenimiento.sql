@@ -1,146 +1,73 @@
---ACTIVIDAD 1.A: Segmentación con EXISTS y NOT EXISTS (Corregido y Ajustado)
--- ============================================================================
-SELECT 
-    c.ClienteID,
-    c.Nombre,
-    c.Ciudad
-FROM Cliente c
-WHERE EXISTS (
-    -- Que tenga al menos un pedido completado/confirmado de 'Redes'
-    SELECT 1
-    FROM Pedido p
-    INNER JOIN DetallePedido dp ON p.PedidoID = dp.PedidoID
-    INNER JOIN Producto pr ON dp.ProductoID = pr.ProductoID
-    INNER JOIN Categoria cat ON pr.CategoriaID = cat.CategoriaID
-    WHERE p.ClienteID = c.ClienteID
-      AND cat.Nombre = 'Redes'
-      AND p.Estado IN ('Completado', 'Confirmado')
-)
-AND NOT EXISTS (
-    -- Que NO tenga pedidos de 'Seguridad'
-    SELECT 1
-    FROM Pedido p
-    INNER JOIN DetallePedido dp ON p.PedidoID = dp.PedidoID
-    INNER JOIN Producto pr ON dp.ProductoID = pr.ProductoID
-    INNER JOIN Categoria cat ON pr.CategoriaID = cat.CategoriaID
-    WHERE p.ClienteID = c.ClienteID
-      AND cat.Nombre = 'Seguridad'
-      AND p.Estado IN ('Completado', 'Confirmado')
-);
-
--- ACTIVIDAD 1.B: Subconsulta correlacionada (Productos sobre el promedio de su categoría)
--- ============================================================================
-SELECT 
-    p.ProductoID,
-    p.Nombre,
-    cat.Nombre AS Categoria,
-    p.PrecioLista,
-    CAST((
-        SELECT AVG(p_sub.PrecioLista)
-        FROM Producto p_sub
-        WHERE p_sub.CategoriaID = p.CategoriaID
-    ) AS DECIMAL(10,2)) AS PromedioCategoria
-FROM Producto p
-INNER JOIN Categoria cat ON p.CategoriaID = cat.CategoriaID
-WHERE p.PrecioLista > (
-    SELECT AVG(p_sub.PrecioLista)
-    FROM Producto p_sub
-    WHERE p_sub.CategoriaID = p.CategoriaID
-);
-
-
--- ACTIVIDAD 2.A: INSERT ... SELECT (Crear PedidoHistorico2025 y cargar datos)
--- ============================================================================
-
--- 1. Crear la tabla histórica con la misma estructura (si no existe)
-IF OBJECT_ID('PedidoHistorico2025', 'U') IS NOT NULL
-    DROP TABLE PedidoHistorico2025;
+-- ========================================================================================
+-- ARCHIVO: 02_mantenimiento_s05.sql
+-- AUTOR: Leandro
+-- OBJETIVO: Actividad 2 - Mantenimiento controlado de datos DML con validaciones rigurosas.
+-- ========================================================================================
+USE NovaMarket;
 GO
+
+-- STREAMING_CHUNK: Ejecutando Actividad 2A (Insercion historica)...
+PRINT '=======================================================';
+PRINT ' S05.A: INSERT ... SELECT (Crear Historico 2025)       ';
+PRINT '=======================================================';
+
+SELECT 'ANTES: Total Confirmados < 2026 en Tabla Pedido' AS Metrica, COUNT(*) AS Cantidad 
+FROM Pedido WHERE FechaPedido < '2026-01-01' AND Estado = 'CONFIRMADO';
+
+IF OBJECT_ID('PedidoHistorico2025', 'U') IS NULL
+BEGIN
+    CREATE TABLE PedidoHistorico2025 (
+        PedidoID INT PRIMARY KEY, ClienteID INT, FechaPedido DATE, Estado VARCHAR(15), Canal VARCHAR(20)
+    );
+END
+
+INSERT INTO PedidoHistorico2025 (PedidoID, ClienteID, FechaPedido, Estado, Canal)
 SELECT PedidoID, ClienteID, FechaPedido, Estado, Canal
-INTO PedidoHistorico2025
 FROM Pedido
-WHERE FechaPedido < '2026-01-01'
-  AND Estado IN ('Completado', 'Confirmado');
-GO
--- 2. Verificación y conteo origen/destino para asegurar la carga
-SELECT 'Tabla Original Pedido' AS OrigenDestino, COUNT(*) AS TotalFilas FROM Pedido WHERE FechaPedido < '2026-01-01' AND Estado IN ('Completado', 'Confirmado')
-UNION ALL
-SELECT 'Tabla Historica Copiada' AS OrigenDestino, COUNT(*) AS TotalFilas FROM PedidoHistorico2025;
+WHERE FechaPedido < '2026-01-01' AND Estado = 'CONFIRMADO'
+  AND PedidoID NOT IN (SELECT PedidoID FROM PedidoHistorico2025);
+
+SELECT 'DESPUES: Total insertados en PedidoHistorico2025' AS Metrica, COUNT(*) AS Cantidad 
+FROM PedidoHistorico2025;
 GO
 
--- ACTIVIDAD 2.B: UPDATE condicionado en Productos de Redes
--- ============================================================================
+-- STREAMING_CHUNK: Ejecutando Actividad 2B (Update protegido)...
+PRINT '=======================================================';
+PRINT ' S05.B: UPDATE condicionado (Oferta Redes)             ';
+PRINT '=======================================================';
 
--- 1. COMPROBACIÓN ANTES (Visualizar productos de Redes con Stock >= 10)
-SELECT 
-    p.ProductoID,
-    p.Nombre,
-    cat.Nombre AS Categoria,
-    p.PrecioLista,
-    p.PrecioOferta AS PrecioOferta_Antes,
-    p.Stock,
-    p.Activo
-FROM Producto p
-INNER JOIN Categoria cat ON p.CategoriaID = cat.CategoriaID
-WHERE cat.Nombre = 'Redes'
-  AND p.Activo = 1
-  AND p.Stock >= 10;
-GO
+SELECT p.ProductoID, p.Nombre, cat.Nombre AS Categoria, p.Stock, p.PrecioLista, p.PrecioOferta AS Oferta_ANTES
+FROM Producto p INNER JOIN Categoria cat ON p.CategoriaID = cat.CategoriaID
+WHERE cat.Nombre = 'Redes' AND p.Activo = 1 AND p.Stock >= 10;
 
--- 2. EJECUCIÓN DEL UPDATE CONTROLADO
 UPDATE p
 SET p.PrecioOferta = ROUND(p.PrecioLista * 0.90, 2)
 FROM Producto p
 INNER JOIN Categoria cat ON p.CategoriaID = cat.CategoriaID
-WHERE cat.Nombre = 'Redes'
-  AND p.Activo = 1
-  AND p.Stock >= 10;
+WHERE cat.Nombre = 'Redes' AND p.Activo = 1 AND p.Stock >= 10
+  AND (p.PrecioOferta IS NULL OR p.PrecioOferta <> ROUND(p.PrecioLista * 0.90, 2));
+
+SELECT p.ProductoID, p.Nombre, cat.Nombre AS Categoria, p.Stock, p.PrecioLista, p.PrecioOferta AS Oferta_DESPUES
+FROM Producto p INNER JOIN Categoria cat ON p.CategoriaID = cat.CategoriaID
+WHERE cat.Nombre = 'Redes' AND p.Activo = 1 AND p.Stock >= 10;
 GO
 
--- 3. COMPROBACIÓN DESPUÉS (Demostrar los cambios aplicados)
-SELECT 
-    p.ProductoID,
-    p.Nombre,
-    cat.Nombre AS Categoria,
-    p.PrecioLista,
-    p.PrecioOferta AS PrecioOferta_Despues,
-    p.Stock,
-    p.Activo
-FROM Producto p
-INNER JOIN Categoria cat ON p.CategoriaID = cat.CategoriaID
-WHERE cat.Nombre = 'Redes'
-  AND p.Activo = 1
-  AND p.Stock >= 10;
-GO
+-- STREAMING_CHUNK: Ejecutando Actividad 2C (Limpieza controlada)...
+PRINT '=======================================================';
+PRINT ' S05.C: DELETE protegido (Borradores sin detalle)      ';
+PRINT '=======================================================';
 
--- ACTIVIDAD 2.C: DELETE protegido de pedidos BORRADOR sin detalle
--- ============================================================================
+SELECT 'ANTES: Borradores sin detalle' AS Estatus, COUNT(*) AS Cantidad FROM Pedido 
+WHERE Estado = 'BORRADOR' AND NOT EXISTS (SELECT 1 FROM DetallePedido dp WHERE dp.PedidoID = Pedido.PedidoID);
 
--- 1. COMPROBACIÓN ANTES (Listar todos los pedidos actuales y sus detalles asociados)
-SELECT 
-    p.PedidoID,
-    p.Estado,
-    p.FechaPedido,
-    (SELECT COUNT(*) FROM DetallePedido dp WHERE dp.PedidoID = p.PedidoID) AS TotalDetalles
-FROM Pedido p;
-GO
-
--- 2. EJECUCIÓN DEL DELETE PROTEGIDO
--- Elimina solo pedidos 'Borrador' que NO tengan ningún detalle registrado
 DELETE FROM Pedido
-WHERE Estado = 'Borrador'
+WHERE Estado = 'BORRADOR'
   AND NOT EXISTS (
-      SELECT 1 
-      FROM DetallePedido dp 
-      WHERE dp.PedidoID = Pedido.PedidoID
+      SELECT 1 FROM DetallePedido dp WHERE dp.PedidoID = Pedido.PedidoID
   );
-GO
 
--- 3. COMPROBACIÓN DESPUÉS (Verificar que los pedidos válidos o con detalle siguen intactos)
-SELECT 
-    p.PedidoID,
-    p.Estado,
-    p.FechaPedido,
-    (SELECT COUNT(*) FROM DetallePedido dp WHERE dp.PedidoID = p.PedidoID) AS TotalDetalles
-FROM Pedido p;
+SELECT 'DESPUES: Borradores sin detalle restantes' AS Estatus, COUNT(*) AS Cantidad FROM Pedido 
+WHERE Estado = 'BORRADOR' AND NOT EXISTS (SELECT 1 FROM DetallePedido dp WHERE dp.PedidoID = Pedido.PedidoID);
+
+SELECT 'Borradores intactos (POR TENER DETALLE)' AS Estatus, COUNT(*) AS Cantidad FROM Pedido WHERE Estado = 'BORRADOR';
 GO
