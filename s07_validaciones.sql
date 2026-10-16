@@ -48,6 +48,12 @@ IF EXISTS (
     THROW 51013, 'La matriz de casos no coincide con el reporte.', 1;
 
 -- Contraste independiente de pedidos y montos del reporte con las tablas base.
+CREATE TABLE #Contraste (
+    PedidosOrigen INT NOT NULL,
+    PedidosReporte INT NOT NULL,
+    MontoOrigen DECIMAL(18,2) NOT NULL,
+    MontoReporte DECIMAL(18,2) NOT NULL
+);
 ;WITH Origen AS (
     SELECT p.PedidoID,
            COALESCE(SUM(d.Cantidad * d.PrecioUnitario), 0) AS Monto
@@ -60,10 +66,23 @@ IF EXISTS (
       AND p.FechaPedido < '20270101'
     GROUP BY p.PedidoID
 )
+INSERT INTO #Contraste (PedidosOrigen, PedidosReporte, MontoOrigen, MontoReporte)
 SELECT
     (SELECT COUNT(*) FROM Origen) AS PedidosOrigen,
     (SELECT SUM(v.TotalPedidos2026) FROM dbo.vw_S07_VentasPorCliente AS v) AS PedidosReporte,
     (SELECT SUM(o.Monto) FROM Origen AS o) AS MontoOrigen,
     (SELECT SUM(v.MontoVendido2026) FROM dbo.vw_S07_VentasPorCliente AS v) AS MontoReporte;
 
+SELECT c.PedidosOrigen, c.PedidosReporte, c.MontoOrigen, c.MontoReporte
+FROM #Contraste AS c;
+
+IF EXISTS (
+    SELECT 1
+    FROM #Contraste AS c
+    WHERE c.PedidosOrigen <> c.PedidosReporte
+       OR c.MontoOrigen <> c.MontoReporte
+)
+    THROW 51014, 'El reporte no coincide con los pedidos y detalles de origen.', 1;
+
 DROP TABLE #Casos;
+DROP TABLE #Contraste;
