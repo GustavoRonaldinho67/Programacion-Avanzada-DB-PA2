@@ -59,6 +59,7 @@ OPTION (MAXRECURSION 0);
 SET IDENTITY_INSERT dbo.Pedido OFF;
 
 SET IDENTITY_INSERT dbo.DetallePedido ON;
+-- PrecioUnitario guarda el precio histórico en el momento de generar cada línea.
 INSERT INTO dbo.DetallePedido
     (DetalleID, PedidoID, ProductoID, Cantidad, PrecioUnitario)
 SELECT
@@ -90,6 +91,22 @@ FROM dbo.Pedido AS p
 GROUP BY YEAR(p.FechaPedido), p.Estado
 ORDER BY Anio, p.Estado;
 
+-- Las FK del esquema impiden huérfanos; estos conteos dejan evidencia verificable.
+SELECT 'PedidosSinCliente' AS Validacion, COUNT(*) AS Total
+FROM dbo.Pedido AS p
+LEFT JOIN dbo.Cliente AS c ON c.ClienteID = p.ClienteID
+WHERE c.ClienteID IS NULL
+UNION ALL
+SELECT 'DetallesSinPedido', COUNT(*)
+FROM dbo.DetallePedido AS d
+LEFT JOIN dbo.Pedido AS p ON p.PedidoID = d.PedidoID
+WHERE p.PedidoID IS NULL
+UNION ALL
+SELECT 'DetallesSinProducto', COUNT(*)
+FROM dbo.DetallePedido AS d
+LEFT JOIN dbo.Producto AS pr ON pr.ProductoID = d.ProductoID
+WHERE pr.ProductoID IS NULL;
+
 -- IDs de los casos: 1 tiene tres líneas, 10 está pendiente y 29 anulado.
 -- Cliente 3 solo tiene un borrador (Pedido 40), salvo si S05 ya lo eliminó.
 SELECT c.ClienteID, c.Nombre, p.PedidoID, p.Estado,
@@ -120,6 +137,8 @@ WITH VentasPorPedido AS (
       AND p.FechaPedido < '20270101'
     GROUP BY p.PedidoID, p.ClienteID
 )
+-- El filtro está dentro de la CTE, antes del LEFT JOIN exterior. Si se moviera
+-- al WHERE exterior, los clientes sin pedidos válidos desaparecerían.
 SELECT
     c.ClienteID,
     c.Nombre,
@@ -145,33 +164,67 @@ IF (SELECT COUNT(*) FROM dbo.DetallePedido) < 400
 IF (SELECT COUNT(*) FROM dbo.vw_S07_VentasPorCliente)
    <> (SELECT COUNT(*) FROM dbo.Cliente WHERE Activo = 1)
     THROW 51012, 'El reporte debe incluir a todos los clientes activos.', 1;
+IF EXISTS (
+    SELECT 1 FROM dbo.Pedido AS p
+    LEFT JOIN dbo.Cliente AS c ON c.ClienteID = p.ClienteID
+    WHERE c.ClienteID IS NULL
+)
+OR EXISTS (
+    SELECT 1 FROM dbo.DetallePedido AS d
+    LEFT JOIN dbo.Pedido AS p ON p.PedidoID = d.PedidoID
+    WHERE p.PedidoID IS NULL
+)
+OR EXISTS (
+    SELECT 1 FROM dbo.DetallePedido AS d
+    LEFT JOIN dbo.Producto AS pr ON pr.ProductoID = d.ProductoID
+    WHERE pr.ProductoID IS NULL
+)
+    THROW 51015, 'Existen registros sin clave foránea válida.', 1;
 
+DROP TABLE IF EXISTS #Casos;
 CREATE TABLE #Casos (
     Caso NVARCHAR(80) NOT NULL,
+    Tipo NVARCHAR(20) NOT NULL,
     ClienteID INT NOT NULL,
+    PedidoBaseID INT NULL,
     PedidosEsperados INT NOT NULL,
-    MontoEsperado DECIMAL(18,2) NOT NULL
+    MontoEsperado DECIMAL(18,2) NOT NULL,
+    ConclusionSiCumple NVARCHAR(180) NOT NULL
 );
-INSERT INTO #Casos (Caso, ClienteID, PedidosEsperados, MontoEsperado)
+INSERT INTO #Casos
+    (Caso, Tipo, ClienteID, PedidoBaseID, PedidosEsperados, MontoEsperado,
+     ConclusionSiCumple)
 VALUES
     -- Pedido 1: 1 x 300 + 2 x 120 + 1 x 180 = 720; tres líneas, un pedido.
-    (N'Pedido confirmado con tres líneas', 1, 1, 720.00),
+    (N'Pedido confirmado con tres líneas', N'Positivo', 1, 1, 1, 720.00,
+     N'Tres líneas suman 720.00 y el pedido se cuenta una sola vez.'),
     -- Cliente 3 solo tiene el borrador 40, salvo si S05 ya lo eliminó.
-    (N'Sin compras confirmadas', 3, 0, 0.00),
+    (N'Sin compras confirmadas', N'Límite', 3, 40, 0, 0.00,
+     N'El cliente activo permanece en el reporte con dos ceros.'),
     -- Pedido 10 está pendiente; Pedido 29 está anulado.
-    (N'Pedido pendiente', 9, 0, 0.00),
-    (N'Pedido anulado', 8, 0, 0.00);
+    (N'Pedido pendiente', N'Negativo', 9, 10, 0, 0.00,
+     N'El pedido pendiente no suma pedidos ni importe.'),
+    (N'Pedido anulado', N'Negativo', 8, 29, 0, 0.00,
+     N'El anulado no suma; el confirmado del cliente es de 2025.');
 
+-- COUNT(v.PedidoID) devuelve 0 sin coincidencias; COALESCE transforma la suma
+-- NULL en 0.00. La matriz muestra esperado, obtenido y conclusión por caso.
 SELECT
     e.Caso,
+    e.Tipo,
     e.ClienteID,
+    e.PedidoBaseID,
     e.PedidosEsperados,
     v.TotalPedidos2026 AS PedidosObtenidos,
     e.MontoEsperado,
     v.MontoVendido2026 AS MontoObtenido,
     CASE WHEN v.TotalPedidos2026 = e.PedidosEsperados
           AND v.MontoVendido2026 = e.MontoEsperado
-        THEN 'OK' ELSE 'FALLO' END AS Resultado
+        THEN 'OK' ELSE 'FALLO' END AS Resultado,
+    CASE WHEN v.TotalPedidos2026 = e.PedidosEsperados
+          AND v.MontoVendido2026 = e.MontoEsperado
+        THEN e.ConclusionSiCumple
+        ELSE N'Revisar filtros, detalle y datos de origen.' END AS Conclusion
 FROM #Casos AS e
 LEFT JOIN dbo.vw_S07_VentasPorCliente AS v ON v.ClienteID = e.ClienteID
 ORDER BY e.ClienteID;
@@ -187,6 +240,7 @@ IF EXISTS (
     THROW 51013, 'La matriz de casos no coincide con el reporte.', 1;
 
 -- Contraste independiente de pedidos y montos del reporte con las tablas base.
+DROP TABLE IF EXISTS #Contraste;
 CREATE TABLE #Contraste (
     PedidosOrigen INT NOT NULL,
     PedidosReporte INT NOT NULL,
@@ -204,13 +258,23 @@ CREATE TABLE #Contraste (
       AND p.FechaPedido >= '20260101'
       AND p.FechaPedido < '20270101'
     GROUP BY p.PedidoID
+), TotalesOrigen AS (
+    SELECT COUNT(*) AS PedidosOrigen,
+           COALESCE(SUM(o.Monto), 0) AS MontoOrigen
+    FROM Origen AS o
+), TotalesReporte AS (
+    SELECT COALESCE(SUM(v.TotalPedidos2026), 0) AS PedidosReporte,
+           COALESCE(SUM(v.MontoVendido2026), 0) AS MontoReporte
+    FROM dbo.vw_S07_VentasPorCliente AS v
 )
 INSERT INTO #Contraste (PedidosOrigen, PedidosReporte, MontoOrigen, MontoReporte)
 SELECT
-    (SELECT COUNT(*) FROM Origen) AS PedidosOrigen,
-    (SELECT SUM(v.TotalPedidos2026) FROM dbo.vw_S07_VentasPorCliente AS v) AS PedidosReporte,
-    (SELECT SUM(o.Monto) FROM Origen AS o) AS MontoOrigen,
-    (SELECT SUM(v.MontoVendido2026) FROM dbo.vw_S07_VentasPorCliente AS v) AS MontoReporte;
+    o.PedidosOrigen,
+    r.PedidosReporte,
+    o.MontoOrigen,
+    r.MontoReporte
+FROM TotalesOrigen AS o
+CROSS JOIN TotalesReporte AS r;
 
 SELECT c.PedidosOrigen, c.PedidosReporte, c.MontoOrigen, c.MontoReporte
 FROM #Contraste AS c;
