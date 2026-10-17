@@ -1,15 +1,16 @@
 -- ========================================================================================
--- ARCHIVO: 05_reporte_definitivo_s07.sql
--- AUTORES: Daniel (Reporte) / Mauricio (QA - Integracion)
--- OBJETIVO: Actividad 4B y 4C - Reporte de ventas y Matriz Automatizada de Pruebas.
+-- ARCHIVO: 05_s07_reporte_clientes.sql
+-- AUTORES: Victor Aguilar (Reporte) / Mauricio Rojas (QA & Integración)
+-- OBJETIVO: Actividad 4B y 4C - Reporte definitivo por cliente y suite automatizada QA.
 -- ========================================================================================
 USE NovaMarket;
 GO
 
--- STREAMING_CHUNK: Creando el reporte de ventas por cliente...
+-- STREAMING_CHUNK: Creando Vista del Reporte de Ventas por Cliente...
 CREATE OR ALTER VIEW dbo.vw_S07_VentasPorCliente
 AS
 WITH VentasPorPedido AS (
+    -- Pre-agrupa a nivel de pedido para evitar duplicar cabeceras en el JOIN
     SELECT
         p.PedidoID,
         p.ClienteID,
@@ -40,7 +41,7 @@ FROM dbo.vw_S07_VentasPorCliente AS v
 ORDER BY v.ClienteID;
 GO
 
--- STREAMING_CHUNK: Iniciando Matriz de Pruebas QA...
+-- STREAMING_CHUNK: Validaciones de integridad y reglas comerciales...
 SET NOCOUNT ON;
 
 IF (SELECT COUNT(*) FROM dbo.Pedido) < 200
@@ -67,31 +68,34 @@ OR EXISTS (
 )
     THROW 51015, 'Existen registros sin clave foranea valida.', 1;
 
--- STREAMING_CHUNK: Ejecutando Matriz de Casos Automatizada...
+-- STREAMING_CHUNK: Creando y poblando Matriz de Validación de Casos Límite...
 DROP TABLE IF EXISTS #Casos;
 CREATE TABLE #Casos (
     Caso NVARCHAR(80) NOT NULL,
     Tipo NVARCHAR(20) NOT NULL,
     ClienteID INT NOT NULL,
-    PedidoBaseID INT NULL,
     PedidosEsperados INT NOT NULL,
     MontoEsperado DECIMAL(18,2) NOT NULL,
     ConclusionSiCumple NVARCHAR(180) NOT NULL
 );
 
 INSERT INTO #Casos
-    (Caso, Tipo, ClienteID, PedidoBaseID, PedidosEsperados, MontoEsperado,
-     ConclusionSiCumple)
+    (Caso, Tipo, ClienteID, PedidosEsperados, MontoEsperado, ConclusionSiCumple)
 VALUES
-    (N'Pedido confirmado con tres lineas', N'Positivo', 1, 1, 1, 720.00,
-     N'Tres lineas suman 720.00 y el pedido se cuenta una sola vez.'),
-    (N'Sin compras confirmadas', N'Limite', 3, 40, 0, 0.00,
-     N'El cliente activo permanece en el reporte con dos ceros.'),
-    (N'Pedido pendiente', N'Negativo', 9, 10, 0, 0.00,
-     N'El pedido pendiente no suma pedidos ni importe.'),
-    (N'Pedido anulado', N'Negativo', 8, 29, 0, 0.00,
-     N'El anulado no suma; el confirmado del cliente es de 2025.');
+    -- Cliente 1: 3 pedidos confirmados en 2026 (Pedidos 1, 18 y 26 con 7 lineas de detalle en total) = S/ 1660.00
+    (N'Multiplicidad cartesiana controlada', N'Positivo', 1, 3, 1660.00,
+     N'7 lineas en 3 pedidos suman 1660.00; la CTE previene duplicar pedidos por detalle.'),
+    -- Cliente 3: su unico pedido era un borrador sin detalle (depurado en S05); debe figurar con 0 y 0.00
+    (N'Sin compras confirmadas', N'Limite', 3, 0, 0.00,
+     N'El cliente activo permanece en el reporte con valores numericos 0 y 0.00.'),
+    -- Cliente 9: registra unicamente pedidos en estado PENDIENTE
+    (N'Operaciones no confirmadas (Pendiente)', N'Negativo', 9, 0, 0.00,
+     N'El pedido pendiente no suma pedidos ni importe al reporte analitico.'),
+    -- Cliente 8: tiene compra confirmada pero en el ejercicio 2025 (y un anulado en 2026)
+    (N'Filtro temporal anual (2025 vs 2026)', N'Negativo', 8, 0, 0.00,
+     N'El filtro anual omite el importe de 2025 pero preserva al cliente activo.');
 
+-- STREAMING_CHUNK: Evaluando la Matriz de Pruebas QA...
 PRINT '=======================================================';
 PRINT ' RESULTADO DE LA MATRIZ DE PRUEBAS (QA)                ';
 PRINT '=======================================================';
@@ -124,7 +128,7 @@ IF EXISTS (
 )
     THROW 51013, 'CRITICO: La matriz de casos no coincide con el reporte.', 1;
 
--- STREAMING_CHUNK: Contraste Independiente Final...
+-- STREAMING_CHUNK: Ejecutando contraste independiente de cuadre financiero...
 DROP TABLE IF EXISTS #Contraste;
 CREATE TABLE #Contraste (
     PedidosOrigen INT NOT NULL,
@@ -162,7 +166,7 @@ FROM TotalesOrigen AS o
 CROSS JOIN TotalesReporte AS r;
 
 PRINT '=======================================================';
-PRINT ' VALIDACION DE CUADRE FINANCIERO (CONTRASte)           ';
+PRINT ' VALIDACION DE CUADRE FINANCIERO (CONTRASTE)           ';
 PRINT '=======================================================';
 SELECT c.PedidosOrigen, c.PedidosReporte, c.MontoOrigen, c.MontoReporte
 FROM #Contraste AS c;

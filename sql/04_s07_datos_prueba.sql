@@ -1,13 +1,13 @@
 -- ========================================================================================
--- ARCHIVO: 04_datos_de_prueba_y_volumetria_s07.sql
--- AUTOR: Daniel
--- OBJETIVO: Actividad 4A - Generacion y control estricto de datos de prueba (Volumetria).
+-- ARCHIVO: 04_s07_datos_prueba.sql
+-- AUTOR: Victor Aguilar (Dev S07) / Mauricio Rojas (QA)
+-- OBJETIVO: Actividad 4A - Generación y control estricto de volumetría (>200 pedidos, >400 detalles).
 -- ========================================================================================
 USE NovaMarket;
 GO
 SET NOCOUNT ON;
 
--- STREAMING_CHUNK: Validando esquema base...
+-- STREAMING_CHUNK: Validando esquema y pedidos base...
 IF OBJECT_ID(N'dbo.Pedido', N'U') IS NULL
     THROW 51000, 'Ejecute primero sql/00_esquema_y_datos_base.sql.', 1;
 IF NOT EXISTS (SELECT 1 FROM dbo.Pedido WHERE PedidoID = 1)
@@ -15,7 +15,7 @@ IF NOT EXISTS (SELECT 1 FROM dbo.Pedido WHERE PedidoID = 1)
    OR NOT EXISTS (SELECT 1 FROM dbo.Pedido WHERE PedidoID = 29)
     THROW 51001, 'Faltan los pedidos base de los casos de prueba.', 1;
 
--- STREAMING_CHUNK: Generando Pedidos con CTE Recursiva...
+-- STREAMING_CHUNK: Generando Pedidos con CTE Recursiva controlada...
 SET IDENTITY_INSERT dbo.Pedido ON;
 ;WITH Numeros AS (
     SELECT 1 AS Numero
@@ -57,7 +57,7 @@ WHERE NOT EXISTS (
 OPTION (MAXRECURSION 0);
 SET IDENTITY_INSERT dbo.Pedido OFF;
 
--- STREAMING_CHUNK: Generando Detalles de Pedidos...
+-- STREAMING_CHUNK: Generando Detalles asociados a los pedidos...
 SET IDENTITY_INSERT dbo.DetallePedido ON;
 INSERT INTO dbo.DetallePedido
     (DetalleID, PedidoID, ProductoID, Cantidad, PrecioUnitario)
@@ -79,7 +79,7 @@ WHERE p.PedidoID BETWEEN 7001 AND 7162
   );
 SET IDENTITY_INSERT dbo.DetallePedido OFF;
 
--- STREAMING_CHUNK: Verificando metricas de volumetria...
+-- STREAMING_CHUNK: Verificando métricas globales de volumetría...
 PRINT '=======================================================';
 PRINT ' METRICAS DE VOLUMETRIA                                ';
 PRINT '=======================================================';
@@ -94,7 +94,7 @@ FROM dbo.Pedido AS p
 GROUP BY YEAR(p.FechaPedido), p.Estado
 ORDER BY Anio, p.Estado;
 
--- STREAMING_CHUNK: Auditoria de Integridad Referencial...
+-- STREAMING_CHUNK: Verificando integridad referencial (0 huérfanos)...
 SELECT 'PedidosSinCliente' AS Validacion, COUNT(*) AS Total
 FROM dbo.Pedido AS p
 LEFT JOIN dbo.Cliente AS c ON c.ClienteID = p.ClienteID
@@ -110,7 +110,7 @@ FROM dbo.DetallePedido AS d
 LEFT JOIN dbo.Producto AS pr ON pr.ProductoID = d.ProductoID
 WHERE pr.ProductoID IS NULL;
 
--- STREAMING_CHUNK: Validacion de preservacion de Casos Limite...
+-- STREAMING_CHUNK: Comprobando que los casos límite se mantuvieron intactos...
 PRINT '=======================================================';
 PRINT ' AUDITORIA DE CASOS LIMITE INTACTOS                    ';
 PRINT '=======================================================';
